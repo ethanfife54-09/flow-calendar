@@ -77,14 +77,19 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
-      { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { title: "TaskFlow — Natural language to calendar" },
+      {
+        name: "description",
+        content:
+          "TaskFlow turns natural language into organized calendar events with AI-powered smart scheduling.",
+      },
+      { property: "og:title", content: "TaskFlow — Natural language to calendar" },
+      {
+        property: "og:description",
+        content: "AI-powered productivity: type tasks in plain English, get an organized calendar.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { name: "twitter:site", content: "@Lovable" },
     ],
     links: [
       {
