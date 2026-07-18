@@ -89,7 +89,11 @@ function parseInterpretResult(raw: string): InterpretResult {
   return { type: "tasks", tasks, summary };
 }
 
-async function loadContext(supabase: SupabaseCtx, userId: string, nowISO: string) {
+async function loadContext(
+  supabase: { from: (t: string) => any }, // eslint-disable-line @typescript-eslint/no-explicit-any
+  userId: string,
+  nowISO: string,
+) {
   const { data: prefs } = await supabase
     .from("user_preferences")
     .select(
@@ -109,8 +113,6 @@ async function loadContext(supabase: SupabaseCtx, userId: string, nowISO: string
     .limit(60);
   return { prefs, upcoming: upcoming ?? [] };
 }
-
-type SupabaseCtx = { from: (t: string) => { select: (c: string) => any } } & Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 function systemPrompt(args: {
   clientNowISO: string;
