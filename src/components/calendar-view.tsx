@@ -265,7 +265,7 @@ function EditDialog({
   const [priority, setPriority] = useState<"low" | "medium" | "high">("medium");
   const [category, setCategory] = useState("general");
 
-  useMemo(() => {
+  useEffect(() => {
     if (task) {
       setTitle(task.title);
       setNotes(task.notes ?? "");
