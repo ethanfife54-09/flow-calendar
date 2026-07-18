@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Task } from "@/routes/_authenticated/dashboard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -265,7 +265,7 @@ function EditDialog({
   const [priority, setPriority] = useState<"low" | "medium" | "high">("medium");
   const [category, setCategory] = useState("general");
 
-  useMemo(() => {
+  useEffect(() => {
     if (task) {
       setTitle(task.title);
       setNotes(task.notes ?? "");

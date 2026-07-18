@@ -1,7 +1,13 @@
 // Server-only helper to call the Lovable AI Gateway.
 const GATEWAY_URL = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
-export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+export type TextPart = { type: "text"; text: string };
+export type ImagePart = { type: "image_url"; image_url: { url: string } };
+export type ContentPart = TextPart | ImagePart;
+export type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string | ContentPart[];
+};
 
 export async function chatCompletion(opts: {
   model?: string;
@@ -19,7 +25,7 @@ export async function chatCompletion(opts: {
       Authorization: `Bearer ${key}`,
     },
     body: JSON.stringify({
-      model: opts.model ?? "google/gemini-3.5-flash",
+      model: opts.model ?? "google/gemini-2.5-flash",
       messages: opts.messages,
       response_format: opts.response_format,
       temperature: opts.temperature ?? 0.2,

@@ -1,19 +1,22 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   listTasks,
-  createTask,
+  createTasks,
   updateTask,
   deleteTask,
   getPreferences,
-  interpretTask,
+  interpretRequest,
+  interpretImage,
+  type InterpretResult,
 } from "@/lib/tasks.functions";
 import { supabase } from "@/integrations/supabase/client";
-import { TaskComposer } from "@/components/task-composer";
+import { TaskComposer, type ComposerMessage } from "@/components/task-composer";
 import { CalendarView } from "@/components/calendar-view";
 import { PreferencesDialog } from "@/components/preferences-dialog";
+import { OnboardingDialog } from "@/components/onboarding-dialog";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Sparkles, LogOut, Settings2, CalendarPlus } from "lucide-react";
@@ -31,12 +34,14 @@ function Dashboard() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [prefsOpen, setPrefsOpen] = useState(false);
+  const [messages, setMessages] = useState<ComposerMessage[]>([]);
 
   const list = useServerFn(listTasks);
-  const create = useServerFn(createTask);
+  const createMany = useServerFn(createTasks);
   const update = useServerFn(updateTask);
   const remove = useServerFn(deleteTask);
-  const interpret = useServerFn(interpretTask);
+  const interpret = useServerFn(interpretRequest);
+  const interpretImg = useServerFn(interpretImage);
   const getPrefs = useServerFn(getPreferences);
 
   const tasksQ = useQuery({ queryKey: ["tasks"], queryFn: () => list() });
@@ -47,30 +52,99 @@ function Dashboard() {
     [],
   );
 
-  const interpretMut = useMutation({
+  const showOnboarding = prefsQ.data && !prefsQ.data.onboarded;
+
+  function historyForModel() {
+    // Send last few turns as chat history so clarifications resolve.
+    return messages.slice(-8).map((m) => ({
+      role: m.role,
+      content: m.content || (m.role === "user" && "image" in m && m.image ? "[image attached]" : ""),
+    }));
+  }
+
+  async function handleInterpretResult(result: InterpretResult) {
+    if (result.type === "clarify") {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: result.question, kind: "clarify" },
+      ]);
+      return;
+    }
+    if (result.tasks.length === 0) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "I couldn't find anything to schedule. Could you rephrase?", kind: "clarify" },
+      ]);
+      return;
+    }
+    const inserted = await createMany({
+      data: {
+        tasks: result.tasks.map((t) => ({
+          title: t.title,
+          notes: t.notes ?? null,
+          start_at: t.start_at,
+          end_at: t.end_at,
+          duration_minutes: t.duration_minutes,
+          priority: t.priority,
+          category: t.category,
+        })),
+      },
+    });
+    qc.invalidateQueries({ queryKey: ["tasks"] });
+    const summary =
+      result.summary ??
+      (inserted.length === 1
+        ? `Scheduled: ${inserted[0].title} — ${new Date(inserted[0].start_at).toLocaleString()}`
+        : `Scheduled ${inserted.length} tasks.`);
+    setMessages((prev) => [...prev, { role: "assistant", content: summary, kind: "summary" }]);
+    toast.success(inserted.length === 1 ? "Task scheduled" : `${inserted.length} tasks scheduled`);
+  }
+
+  const textMut = useMutation({
     mutationFn: async (text: string) => {
-      const parsed = await interpret({
-        data: { text, clientNowISO: new Date().toISOString(), timezone },
-      });
-      return create({
+      setMessages((prev) => [...prev, { role: "user", content: text }]);
+      const result = await interpret({
         data: {
-          title: parsed.title,
-          notes: parsed.notes ?? null,
-          start_at: parsed.start_at,
-          end_at: parsed.end_at,
-          duration_minutes: parsed.duration_minutes,
-          priority: parsed.priority,
-          category: parsed.category,
+          text,
+          clientNowISO: new Date().toISOString(),
+          timezone,
+          history: historyForModel(),
         },
-      }).then((row) => ({ row, reason: parsed.suggested_time_reason }));
-    },
-    onSuccess: ({ row, reason }) => {
-      qc.invalidateQueries({ queryKey: ["tasks"] });
-      toast.success(`Scheduled: ${row.title}`, {
-        description: reason ?? new Date(row.start_at).toLocaleString(),
       });
+      await handleInterpretResult(result);
     },
-    onError: (err: Error) => toast.error(err.message ?? "Could not schedule task"),
+    onError: (err: Error) => {
+      toast.error(err.message ?? "Could not process request");
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Sorry — ${err.message ?? "something went wrong"}.` },
+      ]);
+    },
+  });
+
+  const imgMut = useMutation({
+    mutationFn: async (args: { dataUrl: string; note: string }) => {
+      setMessages((prev) => [
+        ...prev,
+        { role: "user", content: args.note || "Please add this schedule.", image: args.dataUrl },
+      ]);
+      const result = await interpretImg({
+        data: {
+          imageDataUrl: args.dataUrl,
+          note: args.note || undefined,
+          clientNowISO: new Date().toISOString(),
+          timezone,
+        },
+      });
+      await handleInterpretResult(result);
+    },
+    onError: (err: Error) => {
+      toast.error(err.message ?? "Could not read image");
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Sorry — ${err.message ?? "couldn't read that image"}.` },
+      ]);
+    },
   });
 
   const updateMut = useMutation({
@@ -96,6 +170,13 @@ function Dashboard() {
     navigate({ to: "/auth", replace: true });
   }
 
+  // Auto-trim conversation buffer
+  useEffect(() => {
+    if (messages.length > 30) setMessages((prev) => prev.slice(-30));
+  }, [messages.length]);
+
+  const busy = textMut.isPending || imgMut.isPending;
+
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b sticky top-0 z-10 bg-background/80 backdrop-blur">
@@ -111,6 +192,11 @@ function Dashboard() {
               <CalendarPlus className="h-4 w-4 mr-1.5" />
               Google Calendar
             </Button>
+            {messages.length > 0 && (
+              <Button variant="ghost" size="sm" onClick={() => setMessages([])}>
+                New chat
+              </Button>
+            )}
             <Button variant="ghost" size="icon" onClick={() => setPrefsOpen(true)}>
               <Settings2 className="h-4 w-4" />
             </Button>
@@ -123,8 +209,10 @@ function Dashboard() {
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-6">
         <TaskComposer
-          onSubmit={(text) => interpretMut.mutate(text)}
-          busy={interpretMut.isPending}
+          messages={messages}
+          onSubmitText={(text) => textMut.mutate(text)}
+          onSubmitImage={(dataUrl, note) => imgMut.mutate({ dataUrl, note })}
+          busy={busy}
         />
 
         <CalendarView
@@ -144,6 +232,13 @@ function Dashboard() {
         prefs={prefsQ.data ?? null}
         onSaved={() => qc.invalidateQueries({ queryKey: ["prefs"] })}
       />
+
+      {showOnboarding && (
+        <OnboardingDialog
+          open
+          onDone={() => qc.invalidateQueries({ queryKey: ["prefs"] })}
+        />
+      )}
     </div>
   );
 }
