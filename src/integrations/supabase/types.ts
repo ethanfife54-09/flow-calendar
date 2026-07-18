@@ -82,31 +82,46 @@ export type Database = {
       }
       user_preferences: {
         Row: {
+          break_minutes: number
           created_at: string
           earliest_hour: number
+          focus_length_minutes: number
+          goals: string | null
           latest_hour: number
+          onboarded: boolean
           reserved_blocks: Json
           timezone: string
           updated_at: string
           user_id: string
+          work_style: string
         }
         Insert: {
+          break_minutes?: number
           created_at?: string
           earliest_hour?: number
+          focus_length_minutes?: number
+          goals?: string | null
           latest_hour?: number
+          onboarded?: boolean
           reserved_blocks?: Json
           timezone?: string
           updated_at?: string
           user_id: string
+          work_style?: string
         }
         Update: {
+          break_minutes?: number
           created_at?: string
           earliest_hour?: number
+          focus_length_minutes?: number
+          goals?: string | null
           latest_hour?: number
+          onboarded?: boolean
           reserved_blocks?: Json
           timezone?: string
           updated_at?: string
           user_id?: string
+          work_style?: string
         }
         Relationships: []
       }
