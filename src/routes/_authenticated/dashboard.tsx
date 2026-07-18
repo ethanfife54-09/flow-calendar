@@ -74,8 +74,8 @@ function Dashboard() {
   });
 
   const updateMut = useMutation({
-    mutationFn: (args: { id: string; patch: Parameters<typeof update>[0]["data"]["patch"] }) =>
-      update({ data: args }),
+    mutationFn: (args: { id: string; patch: Record<string, unknown> }) =>
+      update({ data: args as never }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["tasks"] }),
     onError: (err: Error) => toast.error(err.message),
   });
