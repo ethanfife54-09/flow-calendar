@@ -199,7 +199,7 @@ export const interpretRequest = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InterpretInput.parse(input))
   .handler(async ({ data, context }): Promise<InterpretResult> => {
     const { supabase, userId } = context;
-    const { prefs, upcoming } = await loadContext(supabase as SupabaseCtx, userId, data.clientNowISO);
+    const { prefs, upcoming } = await loadContext(supabase, userId, data.clientNowISO);
 
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt({ clientNowISO: data.clientNowISO, timezone: data.timezone, prefs, upcoming }) },
@@ -232,7 +232,7 @@ export const interpretImage = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InterpretImageInput.parse(input))
   .handler(async ({ data, context }): Promise<InterpretResult> => {
     const { supabase, userId } = context;
-    const { prefs, upcoming } = await loadContext(supabase as SupabaseCtx, userId, data.clientNowISO);
+    const { prefs, upcoming } = await loadContext(supabase, userId, data.clientNowISO);
 
     const userContent: ContentPart[] = [
       {
