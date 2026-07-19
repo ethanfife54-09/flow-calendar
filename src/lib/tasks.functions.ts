@@ -330,7 +330,20 @@ export const createTasks = createServerFn({ method: "POST" })
     const { pushTaskToGoogle } = await import("./google-calendar.functions");
 
     // Expand recurrences + assign series ids
-    const expanded: Array<Record<string, unknown>> = [];
+    type InsertRow = {
+      user_id: string;
+      title: string;
+      notes: string | null;
+      start_at: string;
+      end_at: string;
+      duration_minutes: number;
+      priority: "low" | "medium" | "high";
+      category: string;
+      recurrence: string;
+      recurrence_until: string | null;
+      series_id: string | null;
+    };
+    const expanded: InsertRow[] = [];
     for (const t of data.tasks) {
       const rec = t.recurrence ?? "none";
       const until = t.recurrence_until ? new Date(t.recurrence_until) : null;
