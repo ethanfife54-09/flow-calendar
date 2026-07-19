@@ -16,7 +16,7 @@ export const Route = createFileRoute("/")({
       { property: "og:title", content: "TaskFlow — Natural language to calendar" },
       {
         property: "og:description",
-        content: "AI-powered productivity: turn thoughts into organized calendar events.",
+        content: "Type tasks in plain English. TaskFlow's AI schedules them into a clean, smart calendar.",
       },
     ],
   }),

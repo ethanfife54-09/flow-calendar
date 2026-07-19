@@ -81,15 +81,19 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       {
         name: "description",
         content:
-          "TaskFlow turns natural language into organized calendar events with AI-powered smart scheduling.",
+          "Type tasks in plain English. TaskFlow's AI schedules them into a clean, smart calendar.",
       },
       { property: "og:title", content: "TaskFlow — Natural language to calendar" },
       {
         property: "og:description",
-        content: "AI-powered productivity: type tasks in plain English, get an organized calendar.",
+        content: "Type tasks in plain English. TaskFlow's AI schedules them into a clean, smart calendar.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:title", content: "TaskFlow — Natural language to calendar" },
+      { name: "twitter:description", content: "Type tasks in plain English. TaskFlow's AI schedules them into a clean, smart calendar." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/2d6c2d10-b027-4b9e-bb6d-84720c35c65d/id-preview-70a36181--fd0b12dd-0828-4532-b4a9-65dadd9f442b.lovable.app-1784431724998.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/2d6c2d10-b027-4b9e-bb6d-84720c35c65d/id-preview-70a36181--fd0b12dd-0828-4532-b4a9-65dadd9f442b.lovable.app-1784431724998.png" },
     ],
     links: [
       {
