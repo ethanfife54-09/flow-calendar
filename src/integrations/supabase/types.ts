@@ -14,6 +14,36 @@ export type Database = {
   }
   public: {
     Tables: {
+      app_user_connections: {
+        Row: {
+          account_label: string | null
+          connection_key_ciphertext: string
+          connector_id: string
+          created_at: string
+          id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          account_label?: string | null
+          connection_key_ciphertext: string
+          connector_id: string
+          created_at?: string
+          id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          account_label?: string | null
+          connection_key_ciphertext?: string
+          connector_id?: string
+          created_at?: string
+          id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           created_at: string
@@ -42,9 +72,14 @@ export type Database = {
           created_at: string
           duration_minutes: number
           end_at: string
+          google_calendar_id: string | null
+          google_event_id: string | null
           id: string
           notes: string | null
           priority: string
+          recurrence: string
+          recurrence_until: string | null
+          series_id: string | null
           start_at: string
           title: string
           updated_at: string
@@ -56,9 +91,14 @@ export type Database = {
           created_at?: string
           duration_minutes?: number
           end_at: string
+          google_calendar_id?: string | null
+          google_event_id?: string | null
           id?: string
           notes?: string | null
           priority?: string
+          recurrence?: string
+          recurrence_until?: string | null
+          series_id?: string | null
           start_at: string
           title: string
           updated_at?: string
@@ -70,9 +110,14 @@ export type Database = {
           created_at?: string
           duration_minutes?: number
           end_at?: string
+          google_calendar_id?: string | null
+          google_event_id?: string | null
           id?: string
           notes?: string | null
           priority?: string
+          recurrence?: string
+          recurrence_until?: string | null
+          series_id?: string | null
           start_at?: string
           title?: string
           updated_at?: string

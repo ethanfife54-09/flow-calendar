@@ -9,6 +9,16 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -19,7 +29,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ChevronLeft, ChevronRight, Check, Trash2, Pencil, Clock } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Check,
+  Trash2,
+  Pencil,
+  Clock,
+  AlertTriangle,
+  Repeat,
+  GripVertical,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type EditPatch = {
@@ -53,21 +73,29 @@ const PRIORITY_COLOR: Record<string, string> = {
   high: "bg-destructive/10 text-destructive",
 };
 
+function overlaps(a: Task, b: Task) {
+  return new Date(a.start_at) < new Date(b.end_at) && new Date(b.start_at) < new Date(a.end_at);
+}
+
 export function CalendarView({
   tasks,
   loading,
   onToggleComplete,
   onDelete,
   onEdit,
+  onMoveDay,
 }: {
   tasks: Task[];
   loading: boolean;
   onToggleComplete: (t: Task) => void;
-  onDelete: (t: Task) => void;
+  onDelete: (t: Task, scope: "single" | "series" | "following") => void;
   onEdit: (t: Task, patch: EditPatch) => void;
+  onMoveDay: (t: Task, newDay: Date) => void;
 }) {
   const [anchor, setAnchor] = useState(() => startOfDay(new Date()));
   const [editing, setEditing] = useState<Task | null>(null);
+  const [deleting, setDeleting] = useState<Task | null>(null);
+  const [dragOverKey, setDragOverKey] = useState<string | null>(null);
 
   const days = useMemo(
     () => Array.from({ length: 7 }, (_, i) => addDays(anchor, i)),
@@ -98,11 +126,7 @@ export function CalendarView({
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setAnchor(startOfDay(new Date()))}
-          >
+          <Button variant="ghost" size="sm" onClick={() => setAnchor(startOfDay(new Date()))}>
             Today
           </Button>
           <Button variant="ghost" size="icon" onClick={() => setAnchor(addDays(anchor, -7))}>
@@ -120,12 +144,32 @@ export function CalendarView({
         )}
         {!loading &&
           days.map((day) => {
-            const items = (byDay.get(day.toISOString()) ?? []).sort(
+            const key = day.toISOString();
+            const items = (byDay.get(key) ?? []).sort(
               (a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime(),
             );
             const isToday = sameDay(day, new Date());
+            const isDragOver = dragOverKey === key;
             return (
-              <div key={day.toISOString()} className="p-4 flex gap-4">
+              <div
+                key={key}
+                className={cn(
+                  "p-4 flex gap-4 transition-colors",
+                  isDragOver && "bg-primary/5",
+                )}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOverKey(key);
+                }}
+                onDragLeave={() => setDragOverKey((k) => (k === key ? null : k))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOverKey(null);
+                  const id = e.dataTransfer.getData("text/task-id");
+                  const t = tasks.find((x) => x.id === id);
+                  if (t && !sameDay(new Date(t.start_at), day)) onMoveDay(t, day);
+                }}
+              >
                 <div className="w-14 shrink-0">
                   <div
                     className={cn(
@@ -147,18 +191,22 @@ export function CalendarView({
                 <div className="flex-1 space-y-1.5 min-w-0">
                   {items.length === 0 && (
                     <div className="text-sm text-muted-foreground/60 italic py-2">
-                      Nothing scheduled
+                      {isDragOver ? "Drop to move here" : "Nothing scheduled"}
                     </div>
                   )}
-                  {items.map((t) => (
-                    <TaskRow
-                      key={t.id}
-                      task={t}
-                      onToggleComplete={() => onToggleComplete(t)}
-                      onDelete={() => onDelete(t)}
-                      onEdit={() => setEditing(t)}
-                    />
-                  ))}
+                  {items.map((t) => {
+                    const conflicts = items.filter((o) => o.id !== t.id && overlaps(t, o));
+                    return (
+                      <TaskRow
+                        key={t.id}
+                        task={t}
+                        conflicts={conflicts}
+                        onToggleComplete={() => onToggleComplete(t)}
+                        onDelete={() => setDeleting(t)}
+                        onEdit={() => setEditing(t)}
+                      />
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -173,17 +221,28 @@ export function CalendarView({
           setEditing(null);
         }}
       />
+
+      <DeleteDialog
+        task={deleting}
+        onClose={() => setDeleting(null)}
+        onConfirm={(scope) => {
+          if (deleting) onDelete(deleting, scope);
+          setDeleting(null);
+        }}
+      />
     </div>
   );
 }
 
 function TaskRow({
   task,
+  conflicts,
   onToggleComplete,
   onDelete,
   onEdit,
 }: {
   task: Task;
+  conflicts: Task[];
   onToggleComplete: () => void;
   onDelete: () => void;
   onEdit: () => void;
@@ -191,14 +250,23 @@ function TaskRow({
   const start = new Date(task.start_at);
   const end = new Date(task.end_at);
   const time = `${start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} – ${end.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  const isRecurring = task.recurrence && task.recurrence !== "none";
+  const fromGoogle = !!task.google_event_id && task.category === "google";
 
   return (
     <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/task-id", task.id);
+        e.dataTransfer.effectAllowed = "move";
+      }}
       className={cn(
-        "group flex items-center gap-3 rounded-lg border bg-background hover:bg-accent/30 transition p-2.5",
+        "group flex items-center gap-2 rounded-lg border bg-background hover:bg-accent/30 transition p-2.5",
         task.completed && "opacity-60",
+        conflicts.length > 0 && "border-amber-500/50 bg-amber-500/5",
       )}
     >
+      <GripVertical className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0 cursor-grab" />
       <button
         onClick={onToggleComplete}
         className={cn(
@@ -212,13 +280,10 @@ function TaskRow({
         {task.completed && <Check className="h-3 w-3 text-primary-foreground" />}
       </button>
       <div className="flex-1 min-w-0">
-        <div
-          className={cn(
-            "text-sm font-medium truncate",
-            task.completed && "line-through",
-          )}
-        >
-          {task.title}
+        <div className={cn("text-sm font-medium truncate flex items-center gap-1.5", task.completed && "line-through")}>
+          <span className="truncate">{task.title}</span>
+          {isRecurring && <Repeat className="h-3 w-3 text-muted-foreground shrink-0" />}
+          {fromGoogle && <span className="text-[9px] uppercase tracking-wide text-muted-foreground shrink-0">GCal</span>}
         </div>
         <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
           <span className="inline-flex items-center gap-1">
@@ -229,6 +294,15 @@ function TaskRow({
             {task.priority}
           </Badge>
           <span className="text-[10px] uppercase tracking-wide">{task.category}</span>
+          {conflicts.length > 0 && (
+            <span
+              className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-500"
+              title={`Conflicts with: ${conflicts.map((c) => c.title).join(", ")}`}
+            >
+              <AlertTriangle className="h-3 w-3" />
+              Conflict
+            </span>
+          )}
         </div>
       </div>
       <div className="opacity-0 group-hover:opacity-100 transition flex items-center">
@@ -352,5 +426,48 @@ function EditDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function DeleteDialog({
+  task,
+  onClose,
+  onConfirm,
+}: {
+  task: Task | null;
+  onClose: () => void;
+  onConfirm: (scope: "single" | "series" | "following") => void;
+}) {
+  if (!task) return null;
+  const isSeries = !!task.series_id;
+  return (
+    <AlertDialog open={!!task} onOpenChange={(v) => !v && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete "{task.title}"?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {isSeries
+              ? "This is part of a repeating series. Choose what to delete."
+              : "This can't be undone."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="flex-wrap gap-2">
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          {isSeries && (
+            <>
+              <Button variant="outline" onClick={() => onConfirm("following")}>
+                This & following
+              </Button>
+              <Button variant="destructive" onClick={() => onConfirm("series")}>
+                Entire series
+              </Button>
+            </>
+          )}
+          <AlertDialogAction onClick={() => onConfirm("single")}>
+            {isSeries ? "Just this one" : "Delete"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
