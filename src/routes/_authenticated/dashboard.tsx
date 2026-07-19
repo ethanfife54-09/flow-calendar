@@ -12,23 +12,39 @@ import {
   interpretImage,
   type InterpretResult,
 } from "@/lib/tasks.functions";
+import {
+  startGoogleCalendarConnect,
+  saveGoogleCalendarConnection,
+  getGoogleCalendarStatus,
+  disconnectGoogleCalendar,
+  importGoogleCalendarWindow,
+} from "@/lib/google-calendar.functions";
+import { connectAppUser } from "@/integrations/lovable/appUserConnectorClient";
 import { supabase } from "@/integrations/supabase/client";
 import { TaskComposer, type ComposerMessage } from "@/components/task-composer";
 import { CalendarView } from "@/components/calendar-view";
 import { PreferencesDialog } from "@/components/preferences-dialog";
 import { OnboardingDialog } from "@/components/onboarding-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { Sparkles, LogOut, Settings2, CalendarPlus } from "lucide-react";
+import { Sparkles, LogOut, Settings2, Calendar, Check, Download, X } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
-  head: () => ({
-    meta: [{ title: "TaskFlow · Dashboard" }],
-  }),
+  head: () => ({ meta: [{ title: "TaskFlow · Dashboard" }] }),
   component: Dashboard,
 });
 
 export type Task = Awaited<ReturnType<typeof listTasks>>[number];
+
+const GATEWAY_BASE_URL = "https://connector-gateway.lovable.dev";
 
 function Dashboard() {
   const navigate = useNavigate();
@@ -43,9 +59,15 @@ function Dashboard() {
   const interpret = useServerFn(interpretRequest);
   const interpretImg = useServerFn(interpretImage);
   const getPrefs = useServerFn(getPreferences);
+  const gcalStatus = useServerFn(getGoogleCalendarStatus);
+  const gcalStart = useServerFn(startGoogleCalendarConnect);
+  const gcalSave = useServerFn(saveGoogleCalendarConnection);
+  const gcalDisconnect = useServerFn(disconnectGoogleCalendar);
+  const gcalImport = useServerFn(importGoogleCalendarWindow);
 
   const tasksQ = useQuery({ queryKey: ["tasks"], queryFn: () => list() });
   const prefsQ = useQuery({ queryKey: ["prefs"], queryFn: () => getPrefs() });
+  const gcalQ = useQuery({ queryKey: ["gcal-status"], queryFn: () => gcalStatus() });
 
   const timezone = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
@@ -55,7 +77,6 @@ function Dashboard() {
   const showOnboarding = prefsQ.data && !prefsQ.data.onboarded;
 
   function historyForModel() {
-    // Send last few turns as chat history so clarifications resolve.
     return messages.slice(-8).map((m) => ({
       role: m.role,
       content: m.content || (m.role === "user" && "image" in m && m.image ? "[image attached]" : ""),
@@ -77,7 +98,7 @@ function Dashboard() {
       ]);
       return;
     }
-    const inserted = await createMany({
+    const res = await createMany({
       data: {
         tasks: result.tasks.map((t) => ({
           title: t.title,
@@ -87,17 +108,29 @@ function Dashboard() {
           duration_minutes: t.duration_minutes,
           priority: t.priority,
           category: t.category,
+          recurrence: t.recurrence ?? "none",
         })),
       },
     });
     qc.invalidateQueries({ queryKey: ["tasks"] });
+    const inserted = res.inserted;
+    const skipped = res.skipped;
     const summary =
       result.summary ??
       (inserted.length === 1
         ? `Scheduled: ${inserted[0].title} — ${new Date(inserted[0].start_at).toLocaleString()}`
-        : `Scheduled ${inserted.length} tasks.`);
-    setMessages((prev) => [...prev, { role: "assistant", content: summary, kind: "summary" }]);
-    toast.success(inserted.length === 1 ? "Task scheduled" : `${inserted.length} tasks scheduled`);
+        : inserted.length > 0
+          ? `Scheduled ${inserted.length} tasks.`
+          : "Nothing new — everything was already on your calendar.");
+    const fullSummary = skipped > 0
+      ? `${summary} (skipped ${skipped} duplicate${skipped === 1 ? "" : "s"})`
+      : summary;
+    setMessages((prev) => [...prev, { role: "assistant", content: fullSummary, kind: "summary" }]);
+    if (inserted.length > 0) {
+      toast.success(inserted.length === 1 ? "Task scheduled" : `${inserted.length} tasks scheduled`);
+    } else if (skipped > 0) {
+      toast.info("Already on your calendar");
+    }
   }
 
   const textMut = useMutation({
@@ -155,13 +188,62 @@ function Dashboard() {
   });
 
   const removeMut = useMutation({
-    mutationFn: (id: string) => remove({ data: { id } }),
+    mutationFn: (args: { id: string; scope: "single" | "series" | "following" }) =>
+      remove({ data: args }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tasks"] });
-      toast.success("Task deleted");
+      toast.success("Deleted");
     },
     onError: (err: Error) => toast.error(err.message),
   });
+
+  async function handleConnectGoogle() {
+    const result = await connectAppUser({
+      connectorId: "google_calendar",
+      gatewayBaseUrl: GATEWAY_BASE_URL,
+      start: async (targetOrigin) => {
+        return await gcalStart({ data: { targetOrigin } });
+      },
+    });
+    if (!result.success) {
+      toast.error(result.error ?? "Sign in was cancelled");
+      return;
+    }
+    if (!result.connectionAPIKey) {
+      toast.error("Google denied offline access — cannot sync.");
+      return;
+    }
+    await gcalSave({ data: { connectionAPIKey: result.connectionAPIKey } });
+    toast.success("Google Calendar connected");
+    qc.invalidateQueries({ queryKey: ["gcal-status"] });
+  }
+
+  async function handleDisconnectGoogle() {
+    await gcalDisconnect();
+    toast.success("Google Calendar disconnected");
+    qc.invalidateQueries({ queryKey: ["gcal-status"] });
+  }
+
+  const importMut = useMutation({
+    mutationFn: async () => {
+      const from = new Date();
+      const to = new Date(from.getTime() + 14 * 24 * 3600 * 1000);
+      return gcalImport({ data: { fromISO: from.toISOString(), toISO: to.toISOString() } });
+    },
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      toast.success(`Imported ${r.imported} event${r.imported === 1 ? "" : "s"} from Google`);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  function handleMoveDay(t: Task, newDay: Date) {
+    const oldStart = new Date(t.start_at);
+    const newStart = new Date(newDay);
+    newStart.setHours(oldStart.getHours(), oldStart.getMinutes(), 0, 0);
+    const newEnd = new Date(newStart.getTime() + t.duration_minutes * 60000);
+    updateMut.mutate({ id: t.id, patch: { start_at: newStart.toISOString(), end_at: newEnd.toISOString() } });
+  }
 
   async function handleSignOut() {
     await qc.cancelQueries();
@@ -170,12 +252,12 @@ function Dashboard() {
     navigate({ to: "/auth", replace: true });
   }
 
-  // Auto-trim conversation buffer
   useEffect(() => {
     if (messages.length > 30) setMessages((prev) => prev.slice(-30));
   }, [messages.length]);
 
   const busy = textMut.isPending || imgMut.isPending;
+  const gcalConnected = gcalQ.data?.connected ?? false;
 
   return (
     <div className="min-h-screen bg-background">
@@ -188,10 +270,43 @@ function Dashboard() {
             <span className="font-semibold tracking-tight">TaskFlow</span>
           </div>
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="sm" disabled title="Coming soon">
-              <CalendarPlus className="h-4 w-4 mr-1.5" />
-              Google Calendar
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant={gcalConnected ? "outline" : "ghost"} size="sm">
+                  <Calendar className="h-4 w-4 mr-1.5" />
+                  {gcalConnected ? (
+                    <>
+                      <Check className="h-3 w-3 mr-1 text-primary" /> Google
+                    </>
+                  ) : (
+                    "Connect Google"
+                  )}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                {gcalConnected ? (
+                  <>
+                    <DropdownMenuLabel className="text-xs font-normal text-muted-foreground truncate">
+                      {gcalQ.data?.accountLabel ?? "Connected"}
+                    </DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => importMut.mutate()} disabled={importMut.isPending}>
+                      <Download className="h-4 w-4 mr-2" />
+                      {importMut.isPending ? "Importing…" : "Import next 2 weeks"}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={handleDisconnectGoogle}>
+                      <X className="h-4 w-4 mr-2" />
+                      Disconnect
+                    </DropdownMenuItem>
+                  </>
+                ) : (
+                  <DropdownMenuItem onClick={handleConnectGoogle}>
+                    <Calendar className="h-4 w-4 mr-2" />
+                    Connect your Google account
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
             {messages.length > 0 && (
               <Button variant="ghost" size="sm" onClick={() => setMessages([])}>
                 New chat
@@ -221,8 +336,9 @@ function Dashboard() {
           onToggleComplete={(t) =>
             updateMut.mutate({ id: t.id, patch: { completed: !t.completed } })
           }
-          onDelete={(t) => removeMut.mutate(t.id)}
+          onDelete={(t, scope) => removeMut.mutate({ id: t.id, scope })}
           onEdit={(t, patch) => updateMut.mutate({ id: t.id, patch })}
+          onMoveDay={handleMoveDay}
         />
       </main>
 
