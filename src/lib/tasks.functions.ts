@@ -13,6 +13,7 @@ export type ParsedTask = {
   priority: "low" | "medium" | "high";
   category: string;
   notes?: string | null;
+  recurrence?: "none" | "daily" | "weekdays" | "weekly" | "monthly";
   suggested_time_reason?: string | null;
 };
 
@@ -41,6 +42,8 @@ function extractJson(raw: string): unknown {
   }
 }
 
+const RECURRENCES = ["none", "daily", "weekdays", "weekly", "monthly"] as const;
+
 function normalizeTask(raw: Partial<ParsedTask> & Record<string, unknown>, fallbackTitle: string): ParsedTask {
   const priority = (["low", "medium", "high"] as const).includes(raw.priority as never)
     ? (raw.priority as "low" | "medium" | "high")
@@ -57,6 +60,9 @@ function normalizeTask(raw: Partial<ParsedTask> & Record<string, unknown>, fallb
     5,
     !isNaN(dur) ? dur : Math.round((end.getTime() - start.getTime()) / 60000),
   );
+  const rec = RECURRENCES.includes(raw.recurrence as never)
+    ? (raw.recurrence as ParsedTask["recurrence"])
+    : "none";
   return {
     title: String(raw.title ?? fallbackTitle).slice(0, 200),
     start_at: start.toISOString(),
@@ -65,6 +71,7 @@ function normalizeTask(raw: Partial<ParsedTask> & Record<string, unknown>, fallb
     priority,
     category: String(raw.category ?? "general").toLowerCase().slice(0, 40),
     notes: (raw.notes as string | null | undefined) ?? null,
+    recurrence: rec,
     suggested_time_reason: (raw.suggested_time_reason as string | null | undefined) ?? null,
   };
 }
@@ -76,7 +83,6 @@ function parseInterpretResult(raw: string): InterpretResult {
   }
   const tasksRaw = Array.isArray(parsed.tasks) ? parsed.tasks : null;
   if (!tasksRaw || tasksRaw.length === 0) {
-    // Fall back: model returned a single task at the root
     if (parsed.start_at && parsed.title) {
       return { type: "tasks", tasks: [normalizeTask(parsed as Partial<ParsedTask>, String(parsed.title))] };
     }
@@ -136,51 +142,47 @@ Output MUST be a single JSON object with one of these two exact shapes (no prose
 1) Tasks scheduled:
 {
   "type": "tasks",
-  "summary": string | null,           // one short sentence summarising what you scheduled, or null
+  "summary": string | null,
   "tasks": [
     {
-      "title": string,                 // short, imperative-friendly
-      "start_at": string,              // ISO 8601 with timezone offset
-      "end_at": string,                // ISO 8601 with timezone offset
+      "title": string,
+      "start_at": string,               // ISO 8601 with timezone offset
+      "end_at": string,
       "duration_minutes": integer,
       "priority": "low" | "medium" | "high",
-      "category": string,              // short lowercase: study, work, health, personal, errand, social, general
+      "category": string,                // short lowercase: study, work, health, personal, errand, social, general
       "notes": string | null,
-      "suggested_time_reason": string | null   // set only when YOU picked the time
+      "recurrence": "none" | "daily" | "weekdays" | "weekly" | "monthly",
+      "suggested_time_reason": string | null
     }
   ]
 }
 
-2) Ask a clarifying question when the request is genuinely ambiguous or missing critical info you cannot reasonably guess (e.g. "organise my day" with no clue what plans exist, an unspecified date that could mean several things, missing hard constraints):
+2) Clarifying question:
 { "type": "clarify", "question": string }
 
 Rules:
+- CRITICAL: NEVER re-schedule an event that already appears in "Existing upcoming events" below. Those are already on the calendar. When the user says "organize my day", ADD NEW blocks around them — do not repeat them.
 - Prefer scheduling when you have enough info. Only clarify when guessing would likely be wrong.
-- For "organise my day" / "plan my day" / "block schedule" style requests, produce MULTIPLE tasks that fill the user's available hours today (or the day they specify), respecting reserved blocks, work style, focus length and break length. Include focus/study/work blocks AND short breaks between them if useful.
+- For "organise my day" / "plan my day" / "block schedule" style requests, produce MULTIPLE tasks that fill the user's available hours today (or the day they specify), respecting reserved blocks, work style, focus length and break length.
+- Set "recurrence" only if the user clearly asked for repetition ("every day", "weekly", "every weekday"). Otherwise "none".
 - Never schedule before ${p.earliest_hour ?? 7}:00 or after ${p.latest_hour ?? 21}:00 local time.
 - Do not overlap existing events or reserved blocks.
-- Interpret relative dates ("tomorrow evening", "Sunday after church") using the given current time.
-- If the user gave an explicit time, use it exactly. Otherwise pick a realistic slot and set suggested_time_reason.
-- Default single-task duration is 30 minutes; study/workout blocks are typically 45–120 minutes.
-- Respect the user's preferred focus length (${p.focus_length_minutes ?? 60} min) and break length (${p.break_minutes ?? 15} min) when block-scheduling.
-- Work style: ${p.work_style ?? "balanced"}. ${
-    p.work_style === "intense"
-      ? "Pack the day tightly with short breaks."
-      : p.work_style === "relaxed"
-        ? "Leave generous breaks and don't over-schedule."
-        : "Balance productive blocks with reasonable breaks."
-  }
-- User's stated goals (may be null): ${p.goals ? JSON.stringify(p.goals) : "null"}
-- Current time (user local): ${args.clientNowISO}
+- Interpret relative dates using the given current time.
+- Default single-task duration is 30 minutes; study/workout blocks 45–120 minutes.
+- Focus length: ${p.focus_length_minutes ?? 60} min. Break length: ${p.break_minutes ?? 15} min.
+- Work style: ${p.work_style ?? "balanced"}.
+- Goals: ${p.goals ? JSON.stringify(p.goals) : "null"}
+- Current time: ${args.clientNowISO}
 - Timezone: ${args.timezone}
 - Reserved blocks: ${JSON.stringify(p.reserved_blocks ?? [])}
-- Existing upcoming events (next 7 days):
+- Existing upcoming events (DO NOT REPEAT THESE):
 ${args.upcoming.map((t) => `  - ${t.title}: ${t.start_at} → ${t.end_at}`).join("\n") || "  (none)"}
 
 Return ONLY the JSON object.`;
 }
 
-// ---------- Interpret text (with optional conversation history) ----------
+// ---------- Interpret text ----------
 
 const HistoryMsg = z.object({
   role: z.enum(["user", "assistant"]),
@@ -200,21 +202,16 @@ export const interpretRequest = createServerFn({ method: "POST" })
   .handler(async ({ data, context }): Promise<InterpretResult> => {
     const { supabase, userId } = context;
     const { prefs, upcoming } = await loadContext(supabase, userId, data.clientNowISO);
-
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt({ clientNowISO: data.clientNowISO, timezone: data.timezone, prefs, upcoming }) },
       ...(data.history ?? []).map((m) => ({ role: m.role, content: m.content }) as ChatMessage),
       { role: "user", content: data.text },
     ];
-
-    const raw = await chatCompletion({
-      messages,
-      response_format: { type: "json_object" },
-    });
+    const raw = await chatCompletion({ messages, response_format: { type: "json_object" } });
     return parseInterpretResult(raw);
   });
 
-// ---------- Interpret image (schedule photo / screenshot) ----------
+// ---------- Interpret image ----------
 
 const InterpretImageInput = z.object({
   imageDataUrl: z
@@ -233,7 +230,6 @@ export const interpretImage = createServerFn({ method: "POST" })
   .handler(async ({ data, context }): Promise<InterpretResult> => {
     const { supabase, userId } = context;
     const { prefs, upcoming } = await loadContext(supabase, userId, data.clientNowISO);
-
     const userContent: ContentPart[] = [
       {
         type: "text",
@@ -245,20 +241,46 @@ export const interpretImage = createServerFn({ method: "POST" })
       },
       { type: "image_url", image_url: { url: data.imageDataUrl } },
     ];
-
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt({ clientNowISO: data.clientNowISO, timezone: data.timezone, prefs, upcoming }) },
       { role: "user", content: userContent },
     ];
-
-    const raw = await chatCompletion({
-      messages,
-      response_format: { type: "json_object" },
-    });
+    const raw = await chatCompletion({ messages, response_format: { type: "json_object" } });
     return parseInterpretResult(raw);
   });
 
+// ---------- Recurrence expansion ----------
+
+function expandOccurrences(
+  start: Date,
+  end: Date,
+  recurrence: string,
+  until: Date | null,
+): Array<{ start: Date; end: Date }> {
+  if (recurrence === "none") return [{ start, end }];
+  const horizon = until ?? new Date(start.getTime() + 56 * 24 * 3600 * 1000); // 8 weeks
+  const dur = end.getTime() - start.getTime();
+  const out: Array<{ start: Date; end: Date }> = [];
+  let cursor = new Date(start);
+  let safety = 0;
+  while (cursor <= horizon && safety++ < 400) {
+    if (recurrence === "weekdays") {
+      const d = cursor.getDay();
+      if (d !== 0 && d !== 6) out.push({ start: new Date(cursor), end: new Date(cursor.getTime() + dur) });
+    } else {
+      out.push({ start: new Date(cursor), end: new Date(cursor.getTime() + dur) });
+    }
+    if (recurrence === "daily" || recurrence === "weekdays") cursor.setDate(cursor.getDate() + 1);
+    else if (recurrence === "weekly") cursor.setDate(cursor.getDate() + 7);
+    else if (recurrence === "monthly") cursor.setMonth(cursor.getMonth() + 1);
+    else break;
+  }
+  return out;
+}
+
 // ---------- Task CRUD ----------
+
+const RecurrenceEnum = z.enum(["none", "daily", "weekdays", "weekly", "monthly"]);
 
 const TaskCreateInput = z.object({
   title: z.string().min(1).max(200),
@@ -268,21 +290,35 @@ const TaskCreateInput = z.object({
   duration_minutes: z.number().int().min(5).max(24 * 60),
   priority: z.enum(["low", "medium", "high"]),
   category: z.string().min(1).max(40),
+  recurrence: RecurrenceEnum.optional().default("none"),
+  recurrence_until: z.string().nullable().optional(),
 });
 
-export const createTask = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((input: unknown) => TaskCreateInput.parse(input))
-  .handler(async ({ data, context }) => {
-    const { supabase, userId } = context;
-    const { data: row, error } = await supabase
-      .from("tasks")
-      .insert({ ...data, user_id: userId })
-      .select("*")
-      .single();
-    if (error) throw new Error(error.message);
-    return row;
-  });
+async function findDuplicates(
+  supabase: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+  userId: string,
+  rows: Array<{ title: string; start_at: string }>,
+): Promise<Set<string>> {
+  if (rows.length === 0) return new Set();
+  const minTime = new Date(Math.min(...rows.map((r) => new Date(r.start_at).getTime())) - 15 * 60000).toISOString();
+  const maxTime = new Date(Math.max(...rows.map((r) => new Date(r.start_at).getTime())) + 15 * 60000).toISOString();
+  const { data: existing } = await supabase
+    .from("tasks")
+    .select("title, start_at")
+    .eq("user_id", userId)
+    .gte("start_at", minTime)
+    .lte("start_at", maxTime);
+  const keys = new Set<string>();
+  for (const e of (existing ?? []) as Array<{ title: string; start_at: string }>) {
+    keys.add(`${e.title.toLowerCase().trim()}|${Math.floor(new Date(e.start_at).getTime() / (15 * 60000))}`);
+  }
+  const dupes = new Set<string>();
+  for (const r of rows) {
+    const k = `${r.title.toLowerCase().trim()}|${Math.floor(new Date(r.start_at).getTime() / (15 * 60000))}`;
+    if (keys.has(k)) dupes.add(`${r.title}|${r.start_at}`);
+  }
+  return dupes;
+}
 
 const TaskCreateManyInput = z.object({ tasks: z.array(TaskCreateInput).min(1).max(30) });
 
@@ -291,10 +327,69 @@ export const createTasks = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => TaskCreateManyInput.parse(input))
   .handler(async ({ data, context }) => {
     const { supabase, userId } = context;
-    const rows = data.tasks.map((t) => ({ ...t, user_id: userId }));
-    const { data: inserted, error } = await supabase.from("tasks").insert(rows).select("*");
+    const { pushTaskToGoogle } = await import("./google-calendar.functions");
+
+    // Expand recurrences + assign series ids
+    const expanded: Array<Record<string, unknown>> = [];
+    for (const t of data.tasks) {
+      const rec = t.recurrence ?? "none";
+      const until = t.recurrence_until ? new Date(t.recurrence_until) : null;
+      const occurrences = expandOccurrences(new Date(t.start_at), new Date(t.end_at), rec, until);
+      const seriesId = rec === "none" || occurrences.length <= 1 ? null : crypto.randomUUID();
+      for (const o of occurrences) {
+        expanded.push({
+          user_id: userId,
+          title: t.title,
+          notes: t.notes ?? null,
+          start_at: o.start.toISOString(),
+          end_at: o.end.toISOString(),
+          duration_minutes: t.duration_minutes,
+          priority: t.priority,
+          category: t.category,
+          recurrence: rec,
+          recurrence_until: t.recurrence_until ?? null,
+          series_id: seriesId,
+        });
+      }
+    }
+
+    // Dedupe against existing rows
+    const dupes = await findDuplicates(
+      supabase,
+      userId,
+      expanded.map((r) => ({ title: r.title as string, start_at: r.start_at as string })),
+    );
+    const filtered = expanded.filter((r) => !dupes.has(`${r.title}|${r.start_at}`));
+    const skipped = expanded.length - filtered.length;
+
+    if (filtered.length === 0) return { inserted: [], skipped };
+
+    const { data: inserted, error } = await supabase.from("tasks").insert(filtered).select("*");
     if (error) throw new Error(error.message);
-    return inserted ?? [];
+
+    // Push to Google in background (fire-and-forget per task)
+    for (const row of inserted ?? []) {
+      const r = row as {
+        id: string;
+        title: string;
+        notes: string | null;
+        start_at: string;
+        end_at: string;
+        google_event_id: string | null;
+      };
+      pushTaskToGoogle(userId, r)
+        .then(async (res) => {
+          if (res.google_event_id && res.google_event_id !== r.google_event_id) {
+            await supabase
+              .from("tasks")
+              .update({ google_event_id: res.google_event_id, google_calendar_id: "primary" })
+              .eq("id", r.id);
+          }
+        })
+        .catch(() => {});
+    }
+
+    return { inserted: inserted ?? [], skipped };
   });
 
 const TaskUpdateInput = z.object({
@@ -315,7 +410,7 @@ export const updateTask = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => TaskUpdateInput.parse(input))
   .handler(async ({ data, context }) => {
-    const { supabase } = context;
+    const { supabase, userId } = context;
     const { data: row, error } = await supabase
       .from("tasks")
       .update(data.patch)
@@ -323,14 +418,57 @@ export const updateTask = createServerFn({ method: "POST" })
       .select("*")
       .single();
     if (error) throw new Error(error.message);
+
+    // Sync to Google if we're touching schedule/title fields
+    if (data.patch.title || data.patch.start_at || data.patch.end_at || data.patch.notes !== undefined) {
+      const { pushTaskToGoogle } = await import("./google-calendar.functions");
+      pushTaskToGoogle(userId, row as never)
+        .then(async (res) => {
+          if (res.google_event_id && res.google_event_id !== (row as any).google_event_id) {
+            await supabase
+              .from("tasks")
+              .update({ google_event_id: res.google_event_id, google_calendar_id: "primary" })
+              .eq("id", data.id);
+          }
+        })
+        .catch(() => {});
+    }
+
     return row;
   });
 
+const DeleteInput = z.object({
+  id: z.string().uuid(),
+  scope: z.enum(["single", "series", "following"]).optional().default("single"),
+});
+
 export const deleteTask = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((input: unknown) => z.object({ id: z.string().uuid() }).parse(input))
+  .inputValidator((input: unknown) => DeleteInput.parse(input))
   .handler(async ({ data, context }) => {
-    const { error } = await context.supabase.from("tasks").delete().eq("id", data.id);
+    const { supabase, userId } = context;
+    const { deleteFromGoogle } = await import("./google-calendar.functions");
+
+    if (data.scope !== "single") {
+      const { data: base } = await supabase.from("tasks").select("*").eq("id", data.id).maybeSingle();
+      if (base?.series_id) {
+        let q = supabase.from("tasks").select("id, google_event_id").eq("series_id", base.series_id);
+        if (data.scope === "following") q = q.gte("start_at", base.start_at);
+        const { data: rows } = await q;
+        for (const r of (rows ?? []) as Array<{ id: string; google_event_id: string | null }>) {
+          deleteFromGoogle(userId, r.google_event_id).catch(() => {});
+        }
+        let del = supabase.from("tasks").delete().eq("series_id", base.series_id);
+        if (data.scope === "following") del = del.gte("start_at", base.start_at);
+        const { error } = await del;
+        if (error) throw new Error(error.message);
+        return { ok: true };
+      }
+    }
+
+    const { data: row } = await supabase.from("tasks").select("google_event_id").eq("id", data.id).maybeSingle();
+    if (row?.google_event_id) deleteFromGoogle(userId, row.google_event_id).catch(() => {});
+    const { error } = await supabase.from("tasks").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
   });
