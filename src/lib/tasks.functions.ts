@@ -380,27 +380,36 @@ export const createTasks = createServerFn({ method: "POST" })
     const { data: inserted, error } = await supabase.from("tasks").insert(filtered).select("*");
     if (error) throw new Error(error.message);
 
-    // Push to Google in background (fire-and-forget per task)
-    for (const row of inserted ?? []) {
-      const r = row as {
-        id: string;
-        title: string;
-        notes: string | null;
-        start_at: string;
-        end_at: string;
-        google_event_id: string | null;
-      };
-      pushTaskToGoogle(userId, r)
-        .then(async (res) => {
+    // Push to Google — must await, otherwise the Worker cancels pending promises
+    // when the handler returns and no event is created.
+    console.log(`[tasks.create] inserted ${inserted?.length ?? 0} rows, syncing to Google`);
+    await Promise.all(
+      (inserted ?? []).map(async (row) => {
+        const r = row as {
+          id: string;
+          title: string;
+          notes: string | null;
+          start_at: string;
+          end_at: string;
+          google_event_id: string | null;
+        };
+        try {
+          const res = await pushTaskToGoogle(userId, r);
           if (res.google_event_id && res.google_event_id !== r.google_event_id) {
-            await supabase
+            const { error: updErr } = await supabase
               .from("tasks")
               .update({ google_event_id: res.google_event_id, google_calendar_id: "primary" })
               .eq("id", r.id);
+            if (updErr) console.error("[tasks.create] failed to save google_event_id", updErr);
+            else console.log(`[tasks.create] saved google_event_id=${res.google_event_id} for task ${r.id}`);
+          } else if (!res.google_event_id) {
+            console.warn(`[tasks.create] no google_event_id returned for task ${r.id}`);
           }
-        })
-        .catch(() => {});
-    }
+        } catch (e) {
+          console.error("[tasks.create] pushTaskToGoogle threw", e);
+        }
+      }),
+    );
 
     return { inserted: inserted ?? [], skipped };
   });
@@ -432,19 +441,22 @@ export const updateTask = createServerFn({ method: "POST" })
       .single();
     if (error) throw new Error(error.message);
 
-    // Sync to Google if we're touching schedule/title fields
+    // Sync to Google if schedule/title fields changed. Await so the Worker doesn't cancel it.
     if (data.patch.title || data.patch.start_at || data.patch.end_at || data.patch.notes !== undefined) {
       const { pushTaskToGoogle } = await import("./google-calendar.functions");
-      pushTaskToGoogle(userId, row as never)
-        .then(async (res) => {
-          if (res.google_event_id && res.google_event_id !== (row as any).google_event_id) {
-            await supabase
-              .from("tasks")
-              .update({ google_event_id: res.google_event_id, google_calendar_id: "primary" })
-              .eq("id", data.id);
-          }
-        })
-        .catch(() => {});
+      try {
+        const res = await pushTaskToGoogle(userId, row as never);
+        const existingId = (row as { google_event_id: string | null }).google_event_id;
+        if (res.google_event_id && res.google_event_id !== existingId) {
+          await supabase
+            .from("tasks")
+            .update({ google_event_id: res.google_event_id, google_calendar_id: "primary" })
+            .eq("id", data.id);
+          console.log(`[tasks.update] saved google_event_id=${res.google_event_id} for task ${data.id}`);
+        }
+      } catch (e) {
+        console.error("[tasks.update] pushTaskToGoogle threw", e);
+      }
     }
 
     return row;
@@ -468,9 +480,13 @@ export const deleteTask = createServerFn({ method: "POST" })
         let q = supabase.from("tasks").select("id, google_event_id").eq("series_id", base.series_id);
         if (data.scope === "following") q = q.gte("start_at", base.start_at);
         const { data: rows } = await q;
-        for (const r of (rows ?? []) as Array<{ id: string; google_event_id: string | null }>) {
-          deleteFromGoogle(userId, r.google_event_id).catch(() => {});
-        }
+        await Promise.all(
+          ((rows ?? []) as Array<{ id: string; google_event_id: string | null }>).map((r) =>
+            deleteFromGoogle(userId, r.google_event_id).catch((e) =>
+              console.error("[tasks.delete] deleteFromGoogle threw", e),
+            ),
+          ),
+        );
         let del = supabase.from("tasks").delete().eq("series_id", base.series_id);
         if (data.scope === "following") del = del.gte("start_at", base.start_at);
         const { error } = await del;
@@ -480,7 +496,11 @@ export const deleteTask = createServerFn({ method: "POST" })
     }
 
     const { data: row } = await supabase.from("tasks").select("google_event_id").eq("id", data.id).maybeSingle();
-    if (row?.google_event_id) deleteFromGoogle(userId, row.google_event_id).catch(() => {});
+    if (row?.google_event_id) {
+      await deleteFromGoogle(userId, row.google_event_id).catch((e) =>
+        console.error("[tasks.delete] deleteFromGoogle threw", e),
+      );
+    }
     const { error } = await supabase.from("tasks").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
