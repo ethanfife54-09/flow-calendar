@@ -480,9 +480,13 @@ export const deleteTask = createServerFn({ method: "POST" })
         let q = supabase.from("tasks").select("id, google_event_id").eq("series_id", base.series_id);
         if (data.scope === "following") q = q.gte("start_at", base.start_at);
         const { data: rows } = await q;
-        for (const r of (rows ?? []) as Array<{ id: string; google_event_id: string | null }>) {
-          deleteFromGoogle(userId, r.google_event_id).catch(() => {});
-        }
+        await Promise.all(
+          ((rows ?? []) as Array<{ id: string; google_event_id: string | null }>).map((r) =>
+            deleteFromGoogle(userId, r.google_event_id).catch((e) =>
+              console.error("[tasks.delete] deleteFromGoogle threw", e),
+            ),
+          ),
+        );
         let del = supabase.from("tasks").delete().eq("series_id", base.series_id);
         if (data.scope === "following") del = del.gte("start_at", base.start_at);
         const { error } = await del;
@@ -492,7 +496,11 @@ export const deleteTask = createServerFn({ method: "POST" })
     }
 
     const { data: row } = await supabase.from("tasks").select("google_event_id").eq("id", data.id).maybeSingle();
-    if (row?.google_event_id) deleteFromGoogle(userId, row.google_event_id).catch(() => {});
+    if (row?.google_event_id) {
+      await deleteFromGoogle(userId, row.google_event_id).catch((e) =>
+        console.error("[tasks.delete] deleteFromGoogle threw", e),
+      );
+    }
     const { error } = await supabase.from("tasks").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
