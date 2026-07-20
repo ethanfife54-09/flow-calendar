@@ -116,7 +116,11 @@ export async function pushTaskToGoogle(
   const { getConnectionKeyForUser } = await import("@/lib/appUserConnections.server");
   const { callAsAppUser } = await import("@/integrations/lovable/appUserConnector");
   const key = await getConnectionKeyForUser(userId, CONNECTOR_ID);
-  if (!key) return { google_event_id: task.google_event_id };
+  console.log(`[gcal.push] task=${task.id} hasKey=${!!key} existingEventId=${task.google_event_id ?? "null"}`);
+  if (!key) {
+    console.warn(`[gcal.push] no connection key for user ${userId} — skipping sync`);
+    return { google_event_id: task.google_event_id };
+  }
   const body = {
     summary: task.title,
     description: task.notes ?? undefined,
@@ -136,7 +140,12 @@ export async function pushTaskToGoogle(
           body: JSON.stringify(body),
         },
       });
-      if (!res.ok) throw new Error(`Google PATCH failed: ${res.status}`);
+      console.log(`[gcal.push] PATCH status=${res.status} task=${task.id}`);
+      if (!res.ok) {
+        const errBody = await res.text();
+        console.error(`[gcal.push] PATCH failed ${res.status}: ${errBody}`);
+        throw new Error(`Google PATCH failed: ${res.status}`);
+      }
       return { google_event_id: task.google_event_id };
     }
     const res = await callAsAppUser({
@@ -150,8 +159,14 @@ export async function pushTaskToGoogle(
         body: JSON.stringify(body),
       },
     });
-    if (!res.ok) throw new Error(`Google POST failed: ${res.status}`);
+    console.log(`[gcal.push] POST status=${res.status} task=${task.id}`);
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.error(`[gcal.push] POST failed ${res.status}: ${errBody}`);
+      throw new Error(`Google POST failed: ${res.status}`);
+    }
     const j = (await res.json()) as { id?: string };
+    console.log(`[gcal.push] created event id=${j.id} for task ${task.id}`);
     return { google_event_id: j.id ?? null };
   } catch (e) {
     console.error("pushTaskToGoogle failed", e);
