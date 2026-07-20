@@ -280,8 +280,16 @@ export const interpretRequest = createServerFn({ method: "POST" })
       { role: "user", content: data.text },
     ];
     const raw = await chatCompletion({ messages, response_format: { type: "json_object" } });
-    return parseInterpretResult(raw);
+    console.log(`[interpret.text] tz=${data.timezone} nowISO=${data.clientNowISO} input=${JSON.stringify(data.text)} raw=${raw.slice(0, 800)}`);
+    const result = parseInterpretResult(raw);
+    if (result.type === "tasks") {
+      console.log(`[interpret.text] parsed ${result.tasks.length} task(s): ${result.tasks.map((t) => `${t.title}@${t.start_at}`).join(", ")}`);
+    } else {
+      console.log(`[interpret.text] clarify: ${result.question}`);
+    }
+    return result;
   });
+
 
 // ---------- Interpret image ----------
 
