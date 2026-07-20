@@ -441,19 +441,22 @@ export const updateTask = createServerFn({ method: "POST" })
       .single();
     if (error) throw new Error(error.message);
 
-    // Sync to Google if we're touching schedule/title fields
+    // Sync to Google if schedule/title fields changed. Await so the Worker doesn't cancel it.
     if (data.patch.title || data.patch.start_at || data.patch.end_at || data.patch.notes !== undefined) {
       const { pushTaskToGoogle } = await import("./google-calendar.functions");
-      pushTaskToGoogle(userId, row as never)
-        .then(async (res) => {
-          if (res.google_event_id && res.google_event_id !== (row as any).google_event_id) {
-            await supabase
-              .from("tasks")
-              .update({ google_event_id: res.google_event_id, google_calendar_id: "primary" })
-              .eq("id", data.id);
-          }
-        })
-        .catch(() => {});
+      try {
+        const res = await pushTaskToGoogle(userId, row as never);
+        const existingId = (row as { google_event_id: string | null }).google_event_id;
+        if (res.google_event_id && res.google_event_id !== existingId) {
+          await supabase
+            .from("tasks")
+            .update({ google_event_id: res.google_event_id, google_calendar_id: "primary" })
+            .eq("id", data.id);
+          console.log(`[tasks.update] saved google_event_id=${res.google_event_id} for task ${data.id}`);
+        }
+      } catch (e) {
+        console.error("[tasks.update] pushTaskToGoogle threw", e);
+      }
     }
 
     return row;
