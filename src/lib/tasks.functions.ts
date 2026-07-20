@@ -120,6 +120,62 @@ async function loadContext(
   return { prefs, upcoming: upcoming ?? [] };
 }
 
+function tzParts(date: Date, timezone: string) {
+  // Extract Y/M/D/H/M and weekday in the user's local timezone. Never rely on
+  // the server's UTC "today" for relative-date reasoning — that was the bug
+  // where "tomorrow" jumped two days for users east of UTC after their local
+  // midnight.
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    weekday: "long",
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(date).map((p) => [p.type, p.value]));
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour === "24" ? "0" : parts.hour),
+    minute: Number(parts.minute),
+    weekday: parts.weekday,
+  };
+}
+
+function tzOffsetString(date: Date, timezone: string): string {
+  // Returns "+05:30" / "-04:00" for the given instant in the given TZ.
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    timeZoneName: "shortOffset",
+    hour: "numeric",
+  });
+  const part = dtf.formatToParts(date).find((p) => p.type === "timeZoneName")?.value ?? "GMT+0";
+  const m = part.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+  if (!m) return "+00:00";
+  const sign = m[1];
+  const hh = m[2].padStart(2, "0");
+  const mm = (m[3] ?? "00").padStart(2, "0");
+  return `${sign}${hh}:${mm}`;
+}
+
+function localDateCalendar(now: Date, timezone: string): string {
+  // Human-readable list of the next 8 days in the user's TZ so the model
+  // never has to convert UTC → local itself.
+  const lines: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    const d = new Date(now.getTime() + i * 24 * 3600 * 1000);
+    const p = tzParts(d, timezone);
+    const iso = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+    const label = i === 0 ? "today" : i === 1 ? "tomorrow" : `in ${i} days`;
+    lines.push(`  ${label} = ${p.weekday} ${iso}`);
+  }
+  return lines.join("\n");
+}
+
 function systemPrompt(args: {
   clientNowISO: string;
   timezone: string;
@@ -135,6 +191,12 @@ function systemPrompt(args: {
   upcoming: Array<{ title: string; start_at: string; end_at: string }>;
 }) {
   const p = args.prefs ?? {};
+  const now = new Date(args.clientNowISO);
+  const local = tzParts(now, args.timezone);
+  const offset = tzOffsetString(now, args.timezone);
+  const localNowStr =
+    `${local.year}-${String(local.month).padStart(2, "0")}-${String(local.day).padStart(2, "0")}` +
+    `T${String(local.hour).padStart(2, "0")}:${String(local.minute).padStart(2, "0")}:00${offset}`;
   return `You are TaskFlow, an assistant that turns a user's natural-language request into structured calendar events.
 
 Output MUST be a single JSON object with one of these two exact shapes (no prose, no markdown):
@@ -146,7 +208,7 @@ Output MUST be a single JSON object with one of these two exact shapes (no prose
   "tasks": [
     {
       "title": string,
-      "start_at": string,               // ISO 8601 with timezone offset
+      "start_at": string,               // ISO 8601 WITH the user's timezone offset (e.g. ends in ${offset})
       "end_at": string,
       "duration_minutes": integer,
       "priority": "low" | "medium" | "high",
@@ -161,26 +223,36 @@ Output MUST be a single JSON object with one of these two exact shapes (no prose
 2) Clarifying question:
 { "type": "clarify", "question": string }
 
-Rules:
+DATE & TIME RULES (read carefully — misinterpreting these is the worst failure mode):
+- The user's LOCAL current time is ${localNowStr} (${local.weekday}), timezone ${args.timezone}.
+- Resolve every relative reference against the LOCAL date, never UTC:
+${localDateCalendar(now, args.timezone)}
+- "tonight" / "this evening" = today between 18:00 and 21:00 local.
+- "this afternoon" = today between 12:00 and 17:00 local.
+- "this morning" = today between the user's earliest hour and 12:00 local.
+- "monday"/"tuesday"/... refer to the NEXT occurrence of that weekday (today counts only if the user explicitly says "today"). "next <weekday>" always means at least 7 days away when today is that weekday.
+- Every start_at / end_at MUST end with the offset ${offset} so it round-trips as the intended local moment.
+
+SCHEDULING RULES:
 - CRITICAL: NEVER re-schedule an event that already appears in "Existing upcoming events" below. Those are already on the calendar. When the user says "organize my day", ADD NEW blocks around them — do not repeat them.
-- Prefer scheduling when you have enough info. Only clarify when guessing would likely be wrong.
-- For "organise my day" / "plan my day" / "block schedule" style requests, produce MULTIPLE tasks that fill the user's available hours today (or the day they specify), respecting reserved blocks, work style, focus length and break length.
+- If the user's message contains MULTIPLE distinct things ("study precalc for 2 hours, work out, and call my friend"), produce ONE task per thing — do not merge them.
+- If the user gives no time, pick a sensible slot in the user's waking hours that does not conflict with existing events or reserved blocks; put the reason in "suggested_time_reason".
+- If a request would overlap an existing event or reserved block, either place it in the next free slot OR ask a clarifying question when the conflict is with an important-looking event.
+- If the user asks to move / reschedule / delete / "push everything back", and the request is ambiguous or affects multiple events, ASK a clarifying question instead of guessing.
+- For "organise my day" / "plan my day" / "block schedule" requests, produce MULTIPLE tasks that fill the user's available hours, respecting reserved blocks, work style, focus length and break length.
 - Set "recurrence" only if the user clearly asked for repetition ("every day", "weekly", "every weekday"). Otherwise "none".
 - Never schedule before ${p.earliest_hour ?? 7}:00 or after ${p.latest_hour ?? 21}:00 local time.
-- Do not overlap existing events or reserved blocks.
-- Interpret relative dates using the given current time.
 - Default single-task duration is 30 minutes; study/workout blocks 45–120 minutes.
 - Focus length: ${p.focus_length_minutes ?? 60} min. Break length: ${p.break_minutes ?? 15} min.
 - Work style: ${p.work_style ?? "balanced"}.
 - Goals: ${p.goals ? JSON.stringify(p.goals) : "null"}
-- Current time: ${args.clientNowISO}
-- Timezone: ${args.timezone}
 - Reserved blocks: ${JSON.stringify(p.reserved_blocks ?? [])}
 - Existing upcoming events (DO NOT REPEAT THESE):
 ${args.upcoming.map((t) => `  - ${t.title}: ${t.start_at} → ${t.end_at}`).join("\n") || "  (none)"}
 
 Return ONLY the JSON object.`;
 }
+
 
 // ---------- Interpret text ----------
 
