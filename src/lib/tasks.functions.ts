@@ -380,27 +380,36 @@ export const createTasks = createServerFn({ method: "POST" })
     const { data: inserted, error } = await supabase.from("tasks").insert(filtered).select("*");
     if (error) throw new Error(error.message);
 
-    // Push to Google in background (fire-and-forget per task)
-    for (const row of inserted ?? []) {
-      const r = row as {
-        id: string;
-        title: string;
-        notes: string | null;
-        start_at: string;
-        end_at: string;
-        google_event_id: string | null;
-      };
-      pushTaskToGoogle(userId, r)
-        .then(async (res) => {
+    // Push to Google — must await, otherwise the Worker cancels pending promises
+    // when the handler returns and no event is created.
+    console.log(`[tasks.create] inserted ${inserted?.length ?? 0} rows, syncing to Google`);
+    await Promise.all(
+      (inserted ?? []).map(async (row) => {
+        const r = row as {
+          id: string;
+          title: string;
+          notes: string | null;
+          start_at: string;
+          end_at: string;
+          google_event_id: string | null;
+        };
+        try {
+          const res = await pushTaskToGoogle(userId, r);
           if (res.google_event_id && res.google_event_id !== r.google_event_id) {
-            await supabase
+            const { error: updErr } = await supabase
               .from("tasks")
               .update({ google_event_id: res.google_event_id, google_calendar_id: "primary" })
               .eq("id", r.id);
+            if (updErr) console.error("[tasks.create] failed to save google_event_id", updErr);
+            else console.log(`[tasks.create] saved google_event_id=${res.google_event_id} for task ${r.id}`);
+          } else if (!res.google_event_id) {
+            console.warn(`[tasks.create] no google_event_id returned for task ${r.id}`);
           }
-        })
-        .catch(() => {});
-    }
+        } catch (e) {
+          console.error("[tasks.create] pushTaskToGoogle threw", e);
+        }
+      }),
+    );
 
     return { inserted: inserted ?? [], skipped };
   });
