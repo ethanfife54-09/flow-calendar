@@ -326,8 +326,16 @@ export const interpretImage = createServerFn({ method: "POST" })
       { role: "user", content: userContent },
     ];
     const raw = await chatCompletion({ messages, response_format: { type: "json_object" } });
-    return parseInterpretResult(raw);
+    console.log(`[interpret.image] tz=${data.timezone} nowISO=${data.clientNowISO} raw=${raw.slice(0, 800)}`);
+    const result = parseInterpretResult(raw);
+    if (result.type === "tasks") {
+      console.log(`[interpret.image] parsed ${result.tasks.length} task(s)`);
+    } else {
+      console.log(`[interpret.image] clarify: ${result.question}`);
+    }
+    return result;
   });
+
 
 // ---------- Recurrence expansion ----------
 
