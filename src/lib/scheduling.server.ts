@@ -1,7 +1,7 @@
 // Server-only scheduling + AI prompt helpers for TaskFlow.
 // Kept out of *.functions.ts so server-function modules stay thin wrappers.
 
-import type { BusyBlock, InterpretResult, ParsedTask } from "./task-types";
+import type { BusyBlock, InterpretResult, ParsedTask, TaskChange } from "./task-types";
 
 // ---------------- Timezone primitives ----------------
 
@@ -160,6 +160,26 @@ export function parseInterpretResult(raw: string): InterpretResult {
   ) {
     return { type: "clarify", question: parsed.question.trim() };
   }
+  if (parsed && parsed.type === "changes" && Array.isArray(parsed.changes)) {
+    const changes: TaskChange[] = (parsed.changes as Array<Record<string, unknown>>)
+      .filter((c) => typeof c.id === "string" && (c.action === "move" || c.action === "delete"))
+      .map((c) => ({
+        id: String(c.id),
+        action: c.action as "move" | "delete",
+        title: typeof c.title === "string" ? c.title : null,
+        start_at: typeof c.start_at === "string" ? new Date(c.start_at).toISOString() : null,
+        end_at: typeof c.end_at === "string" ? new Date(c.end_at).toISOString() : null,
+        duration_minutes: typeof c.duration_minutes === "number" ? c.duration_minutes : null,
+      }));
+    if (changes.length > 0) {
+      return {
+        type: "changes",
+        changes,
+        summary: typeof parsed.summary === "string" ? parsed.summary : null,
+      };
+    }
+  }
+
   const tasksRaw = Array.isArray(parsed.tasks) ? parsed.tasks : null;
   if (!tasksRaw || tasksRaw.length === 0) {
     if (parsed.start_at && parsed.title) {
@@ -210,7 +230,7 @@ export async function loadContext(
       .maybeSingle(),
     supabase
       .from("tasks")
-      .select("title, start_at, end_at")
+      .select("id, title, start_at, end_at")
       .eq("user_id", userId)
       .gte("end_at", now.toISOString())
       .lte("start_at", horizon.toISOString())
@@ -219,10 +239,17 @@ export async function loadContext(
   ]);
 
   const busy: BusyBlock[] = ((upcoming ?? []) as Array<{
+    id: string;
     title: string;
     start_at: string;
     end_at: string;
-  }>).map((t) => ({ title: t.title, start: t.start_at, end: t.end_at, source: "taskflow" as const }));
+  }>).map((t) => ({
+    id: t.id,
+    title: t.title,
+    start: t.start_at,
+    end: t.end_at,
+    source: "taskflow" as const,
+  }));
 
   // Live Google Calendar availability — the AI must see what's really on the
   // user's calendar, not only what TaskFlow created.
@@ -268,7 +295,8 @@ export function systemPrompt(args: {
         const d = `${s.year}-${String(s.month).padStart(2, "0")}-${String(s.day).padStart(2, "0")}`;
         const t = (x: { hour: number; minute: number }) =>
           `${String(x.hour).padStart(2, "0")}:${String(x.minute).padStart(2, "0")}`;
-        return `  - [${b.source}] ${b.title}: ${s.weekday} ${d} ${t(s)}–${t(e)} local`;
+        const idPart = b.id ? ` (id: ${b.id})` : "";
+        return `  - [${b.source}] ${b.title}: ${s.weekday} ${d} ${t(s)}–${t(e)} local${idPart}`;
       })
       .join("\n") || "  (nothing scheduled)";
 
@@ -295,7 +323,17 @@ Output MUST be a single JSON object with one of these two exact shapes (no prose
   ]
 }
 
-2) Clarifying question:
+2) Change existing events (move / reschedule / delete). Use the "id:" values from the calendar below — ONLY ids marked [taskflow] can be changed:
+{
+  "type": "changes",
+  "summary": string | null,
+  "changes": [
+    { "id": string, "action": "move", "start_at": string, "end_at": string, "duration_minutes": integer }
+    // or { "id": string, "action": "delete" }
+  ]
+}
+
+3) Clarifying question:
 { "type": "clarify", "question": string }
 
 DATE & TIME RULES (misreading these is the worst failure mode):
@@ -315,7 +353,10 @@ SCHEDULING RULES:
 - If the message contains multiple distinct things, output ONE task per thing — never merge them.
 - If no time is given, choose a free slot inside waking hours that overlaps nothing, and explain the choice in suggested_time_reason.
 - If an explicit time collides with an important-looking existing event, ask a clarifying question instead of double-booking.
-- For move / reschedule / delete / "push everything back" requests that are ambiguous or affect several events, ASK a clarifying question.
+- When the user asks to move, reschedule, push back, or delete something that already exists, return shape 2 ("changes") referencing its id — never create a second copy of it.
+- Only [google]-sourced entries with no id cannot be changed; if the user asks to change one, say so via a clarifying question.
+- If a move/delete request is ambiguous or would affect several events, ASK a clarifying question first.
+- New times in "changes" must also respect waking hours and avoid overlapping other busy entries.
 - For "plan my day" requests, fill the free hours with focus blocks separated by breaks, respecting reserved blocks and work style.
 - Set "recurrence" only when repetition is explicit ("every day", "weekly", "every weekday").
 - Never schedule before ${p.earliest_hour ?? 7}:00 or after ${p.latest_hour ?? 21}:00 local time.
