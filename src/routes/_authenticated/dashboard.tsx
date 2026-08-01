@@ -91,6 +91,41 @@ function Dashboard() {
       ]);
       return;
     }
+
+    if (result.type === "changes") {
+      let moved = 0;
+      let deleted = 0;
+      for (const c of result.changes) {
+        try {
+          if (c.action === "delete") {
+            await remove({ data: { id: c.id, scope: "single" } });
+            deleted++;
+          } else if (c.start_at) {
+            const patch: Record<string, unknown> = { start_at: c.start_at };
+            if (c.end_at) patch.end_at = c.end_at;
+            if (c.duration_minutes) patch.duration_minutes = c.duration_minutes;
+            if (c.title) patch.title = c.title;
+            await update({ data: { id: c.id, patch } as never });
+            moved++;
+          }
+        } catch (e) {
+          console.error("change failed", e);
+        }
+      }
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      const fallback =
+        [
+          moved ? `Moved ${moved} event${moved === 1 ? "" : "s"}` : null,
+          deleted ? `deleted ${deleted}` : null,
+        ]
+          .filter(Boolean)
+          .join(", ") || "Nothing to change.";
+      const msg = result.summary ?? fallback;
+      setMessages((prev) => [...prev, { role: "assistant", content: msg, kind: "summary" }]);
+      if (moved || deleted) toast.success("Calendar updated");
+      return;
+    }
+
     if (result.tasks.length === 0) {
       setMessages((prev) => [
         ...prev,
@@ -100,6 +135,7 @@ function Dashboard() {
     }
     const res = await createMany({
       data: {
+        timezone,
         tasks: result.tasks.map((t) => ({
           title: t.title,
           notes: t.notes ?? null,
@@ -122,9 +158,10 @@ function Dashboard() {
         : inserted.length > 0
           ? `Scheduled ${inserted.length} tasks.`
           : "Nothing new — everything was already on your calendar.");
-    const fullSummary = skipped > 0
-      ? `${summary} (skipped ${skipped} duplicate${skipped === 1 ? "" : "s"})`
-      : summary;
+    const parts = [summary];
+    if (skipped > 0) parts.push(`(skipped ${skipped} duplicate${skipped === 1 ? "" : "s"})`);
+    if (result.adjustments?.length) parts.push(result.adjustments.join("; "));
+    const fullSummary = parts.join(" ");
     setMessages((prev) => [...prev, { role: "assistant", content: fullSummary, kind: "summary" }]);
     if (inserted.length > 0) {
       toast.success(inserted.length === 1 ? "Task scheduled" : `${inserted.length} tasks scheduled`);
@@ -132,6 +169,7 @@ function Dashboard() {
       toast.info("Already on your calendar");
     }
   }
+
 
   const textMut = useMutation({
     mutationFn: async (text: string) => {
@@ -198,25 +236,32 @@ function Dashboard() {
   });
 
   async function handleConnectGoogle() {
-    const result = await connectAppUser({
-      connectorId: "google_calendar",
-      gatewayBaseUrl: GATEWAY_BASE_URL,
-      start: async (targetOrigin) => {
-        return await gcalStart({ data: { targetOrigin } });
-      },
-    });
-    if (!result.success) {
-      toast.error(result.error ?? "Sign in was cancelled");
-      return;
+    try {
+      const result = await connectAppUser({
+        connectorId: "google_calendar",
+        gatewayBaseUrl: GATEWAY_BASE_URL,
+        start: async (targetOrigin) => {
+          return await gcalStart({ data: { targetOrigin } });
+        },
+      });
+      if (!result.success) {
+        toast.error(result.error ?? "Sign in was cancelled");
+        return;
+      }
+      if (!result.connectionAPIKey) {
+        toast.error("Google denied offline access — cannot sync.");
+        return;
+      }
+      await gcalSave({ data: { connectionAPIKey: result.connectionAPIKey } });
+      qc.invalidateQueries({ queryKey: ["gcal-status"] });
+      toast.success("Google Calendar connected");
+      // Pull existing events straight away so scheduling knows what's busy.
+      importMut.mutate();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not connect Google Calendar");
     }
-    if (!result.connectionAPIKey) {
-      toast.error("Google denied offline access — cannot sync.");
-      return;
-    }
-    await gcalSave({ data: { connectionAPIKey: result.connectionAPIKey } });
-    toast.success("Google Calendar connected");
-    qc.invalidateQueries({ queryKey: ["gcal-status"] });
   }
+
 
   async function handleDisconnectGoogle() {
     await gcalDisconnect();
@@ -289,6 +334,12 @@ function Dashboard() {
                     <DropdownMenuLabel className="text-xs font-normal text-muted-foreground truncate">
                       {gcalQ.data?.accountLabel ?? "Connected"}
                     </DropdownMenuLabel>
+                    {gcalQ.data && !gcalQ.data.readable && (
+                      <DropdownMenuItem onClick={handleConnectGoogle}>
+                        <Calendar className="h-4 w-4 mr-2" />
+                        Reconnect — calendar not readable
+                      </DropdownMenuItem>
+                    )}
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={() => importMut.mutate()} disabled={importMut.isPending}>
                       <Download className="h-4 w-4 mr-2" />
@@ -300,6 +351,7 @@ function Dashboard() {
                     </DropdownMenuItem>
                   </>
                 ) : (
+
                   <DropdownMenuItem onClick={handleConnectGoogle}>
                     <Calendar className="h-4 w-4 mr-2" />
                     Connect your Google account

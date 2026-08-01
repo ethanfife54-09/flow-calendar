@@ -14,18 +14,23 @@ export interface AppUserOAuthAuthorizeParams {
   credentialsConfiguration?: Record<string, unknown>;
   responseMode?: "redirect" | "web_message";
   webMessageTargetOrigin?: string;
+  /** Existing per-user connection key — sent on reconnect so the gateway can confirm ownership. */
+  connectionAPIKey?: string;
 }
 
 export async function authorizeAppUserOAuth(
   p: AppUserOAuthAuthorizeParams,
 ): Promise<{ authorizationUrl: string; sessionId: string }> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${requireApiKey()}`,
+    "Content-Type": "application/json",
+    "X-Client-Api-Key": p.clientAPIKey,
+  };
+  if (p.connectionAPIKey) headers["X-Connection-Api-Key"] = p.connectionAPIKey;
   const res = await fetch(`${p.gatewayBaseUrl}/api/v1/app-users/oauth2/authorize`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${requireApiKey()}`,
-      "Content-Type": "application/json",
-      "X-Client-Api-Key": p.clientAPIKey,
-    },
+    headers,
+
     body: JSON.stringify({
       connector_id: p.connectorId,
       app_user_id: p.appUserId,
