@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
-import type { InterpretResult, ParsedTask } from "./task-types";
+import type { InterpretResult, ParsedTask, TaskInsertRow } from "./task-types";
 
 export type { InterpretResult, ParsedTask } from "./task-types";
 
@@ -178,7 +178,7 @@ export const createTasks = createServerFn({ method: "POST" })
     const { pushTaskToGoogle } = await import("./google-calendar.server");
     const timezone = data.timezone ?? "UTC";
 
-    const expanded: Array<Record<string, unknown>> = [];
+    const expanded: TaskInsertRow[] = [];
     for (const t of data.tasks) {
       const rec = t.recurrence ?? "none";
       const until = t.recurrence_until ? new Date(t.recurrence_until) : null;
@@ -225,7 +225,7 @@ export const createTasks = createServerFn({ method: "POST" })
 
     // Must await — the Worker cancels pending promises once the handler returns.
     await Promise.all(
-      (inserted ?? []).map(async (row: Record<string, unknown>) => {
+      (inserted ?? []).map(async (row: unknown) => {
         const r = row as unknown as {
           id: string;
           title: string;
