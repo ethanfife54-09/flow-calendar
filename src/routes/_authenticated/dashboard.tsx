@@ -236,25 +236,32 @@ function Dashboard() {
   });
 
   async function handleConnectGoogle() {
-    const result = await connectAppUser({
-      connectorId: "google_calendar",
-      gatewayBaseUrl: GATEWAY_BASE_URL,
-      start: async (targetOrigin) => {
-        return await gcalStart({ data: { targetOrigin } });
-      },
-    });
-    if (!result.success) {
-      toast.error(result.error ?? "Sign in was cancelled");
-      return;
+    try {
+      const result = await connectAppUser({
+        connectorId: "google_calendar",
+        gatewayBaseUrl: GATEWAY_BASE_URL,
+        start: async (targetOrigin) => {
+          return await gcalStart({ data: { targetOrigin } });
+        },
+      });
+      if (!result.success) {
+        toast.error(result.error ?? "Sign in was cancelled");
+        return;
+      }
+      if (!result.connectionAPIKey) {
+        toast.error("Google denied offline access — cannot sync.");
+        return;
+      }
+      await gcalSave({ data: { connectionAPIKey: result.connectionAPIKey } });
+      qc.invalidateQueries({ queryKey: ["gcal-status"] });
+      toast.success("Google Calendar connected");
+      // Pull existing events straight away so scheduling knows what's busy.
+      importMut.mutate();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not connect Google Calendar");
     }
-    if (!result.connectionAPIKey) {
-      toast.error("Google denied offline access — cannot sync.");
-      return;
-    }
-    await gcalSave({ data: { connectionAPIKey: result.connectionAPIKey } });
-    toast.success("Google Calendar connected");
-    qc.invalidateQueries({ queryKey: ["gcal-status"] });
   }
+
 
   async function handleDisconnectGoogle() {
     await gcalDisconnect();
