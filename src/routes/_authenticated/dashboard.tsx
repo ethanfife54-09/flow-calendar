@@ -91,6 +91,39 @@ function Dashboard() {
       ]);
       return;
     }
+
+    if (result.type === "changes") {
+      let moved = 0;
+      let deleted = 0;
+      for (const c of result.changes) {
+        try {
+          if (c.action === "delete") {
+            await remove({ data: { id: c.id, scope: "single" } });
+            deleted++;
+          } else if (c.start_at) {
+            const patch: Record<string, unknown> = { start_at: c.start_at };
+            if (c.end_at) patch.end_at = c.end_at;
+            if (c.duration_minutes) patch.duration_minutes = c.duration_minutes;
+            if (c.title) patch.title = c.title;
+            await update({ data: { id: c.id, patch } as never });
+            moved++;
+          }
+        } catch (e) {
+          console.error("change failed", e);
+        }
+      }
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      const msg =
+        result.summary ??
+        [moved ? `Moved ${moved} event${moved === 1 ? "" : "s"}` : null,
+         deleted ? `deleted ${deleted}` : null]
+          .filter(Boolean)
+          .join(", ") || "Nothing to change.";
+      setMessages((prev) => [...prev, { role: "assistant", content: msg, kind: "summary" }]);
+      if (moved || deleted) toast.success("Calendar updated");
+      return;
+    }
+
     if (result.tasks.length === 0) {
       setMessages((prev) => [
         ...prev,
@@ -100,6 +133,7 @@ function Dashboard() {
     }
     const res = await createMany({
       data: {
+        timezone,
         tasks: result.tasks.map((t) => ({
           title: t.title,
           notes: t.notes ?? null,
@@ -122,9 +156,10 @@ function Dashboard() {
         : inserted.length > 0
           ? `Scheduled ${inserted.length} tasks.`
           : "Nothing new — everything was already on your calendar.");
-    const fullSummary = skipped > 0
-      ? `${summary} (skipped ${skipped} duplicate${skipped === 1 ? "" : "s"})`
-      : summary;
+    const parts = [summary];
+    if (skipped > 0) parts.push(`(skipped ${skipped} duplicate${skipped === 1 ? "" : "s"})`);
+    if (result.adjustments?.length) parts.push(result.adjustments.join("; "));
+    const fullSummary = parts.join(" ");
     setMessages((prev) => [...prev, { role: "assistant", content: fullSummary, kind: "summary" }]);
     if (inserted.length > 0) {
       toast.success(inserted.length === 1 ? "Task scheduled" : `${inserted.length} tasks scheduled`);
@@ -132,6 +167,7 @@ function Dashboard() {
       toast.info("Already on your calendar");
     }
   }
+
 
   const textMut = useMutation({
     mutationFn: async (text: string) => {
