@@ -113,12 +113,14 @@ function Dashboard() {
         }
       }
       qc.invalidateQueries({ queryKey: ["tasks"] });
-      const msg =
-        result.summary ??
-        [moved ? `Moved ${moved} event${moved === 1 ? "" : "s"}` : null,
-         deleted ? `deleted ${deleted}` : null]
+      const fallback =
+        [
+          moved ? `Moved ${moved} event${moved === 1 ? "" : "s"}` : null,
+          deleted ? `deleted ${deleted}` : null,
+        ]
           .filter(Boolean)
           .join(", ") || "Nothing to change.";
+      const msg = result.summary ?? fallback;
       setMessages((prev) => [...prev, { role: "assistant", content: msg, kind: "summary" }]);
       if (moved || deleted) toast.success("Calendar updated");
       return;
