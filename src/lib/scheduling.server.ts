@@ -478,10 +478,8 @@ export function deconflict(args: {
         start = new Date(hit.end);
         if (guard++ > 200) break;
       }
-    } else {
-      // Respect explicit times, but still keep them out of the past.
-      start = new Date(Math.max(start.getTime(), Math.min(start.getTime(), start.getTime())));
     }
+    // Explicit user times are respected as-is (past-shift above still applies).
 
     if (start.toISOString() !== originalISO) {
       adjustments.push(
