@@ -178,3 +178,15 @@ export async function fetchPrimaryCalendarLabel(connectionAPIKey: string): Promi
     return null;
   }
 }
+
+/** True only if we can actually read the calendar right now. Unlike
+ * fetchGoogleBusy (which degrades to an empty list), this reports failures. */
+export async function probeGoogleReadable(userId: string): Promise<boolean> {
+  try {
+    const res = await gcall(userId, "/calendar/v3/calendars/primary");
+    return !!res && res.ok;
+  } catch (e) {
+    console.error("[gcal.probe] threw", e);
+    return false;
+  }
+}
