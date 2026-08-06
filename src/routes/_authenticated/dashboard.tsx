@@ -350,11 +350,17 @@ function Dashboard() {
                     </DropdownMenuItem>
                   </>
                 ) : (
-
-                  <DropdownMenuItem onClick={handleConnectGoogle}>
-                    <Calendar className="h-4 w-4 mr-2" />
-                    Connect your Google account
-                  </DropdownMenuItem>
+                  <>
+                    {gcalNeedsReconnect && (
+                      <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                        Google sign-in expired
+                      </DropdownMenuLabel>
+                    )}
+                    <DropdownMenuItem onClick={handleConnectGoogle}>
+                      <Calendar className="h-4 w-4 mr-2" />
+                      {gcalNeedsReconnect ? "Reconnect Google Calendar" : "Connect your Google account"}
+                    </DropdownMenuItem>
+                  </>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
