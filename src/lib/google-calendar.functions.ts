@@ -55,7 +55,7 @@ export const getGoogleCalendarStatus = createServerFn({ method: "GET" })
       "./appUserConnections.server"
     );
     const info = await getConnectionInfo(context.userId, CONNECTOR_ID);
-    if (!info) return { connected: false, accountLabel: null, readable: false };
+    if (!info) return { connected: false, accountLabel: null, readable: false, needsReconnect: false };
     // "Connected" must mean the key actually works — otherwise the UI lies.
     const key = await getConnectionKeyForUser(context.userId, CONNECTOR_ID);
     let readable = false;
@@ -68,8 +68,19 @@ export const getGoogleCalendarStatus = createServerFn({ method: "GET" })
       ).catch(() => null);
       readable = busy !== null;
     }
-    return { connected: !!key, accountLabel: info.account_label ?? null, readable };
+    // A dead credential is cleared by the probe above — re-check so we don't
+    // report a connection that no longer exists.
+    const stillThere = key
+      ? await getConnectionKeyForUser(context.userId, CONNECTOR_ID)
+      : null;
+    return {
+      connected: !!stillThere,
+      accountLabel: info.account_label ?? null,
+      readable: readable && !!stillThere,
+      needsReconnect: !!key && (!stillThere || !readable),
+    };
   });
+
 
 // ---------- Disconnect ----------
 
