@@ -302,7 +302,9 @@ function Dashboard() {
   }, [messages.length]);
 
   const busy = textMut.isPending || imgMut.isPending;
-  const gcalConnected = gcalQ.data?.connected ?? false;
+  const gcalConnected = (gcalQ.data?.connected ?? false) && (gcalQ.data?.readable ?? false);
+  const gcalNeedsReconnect = gcalQ.data?.needsReconnect ?? false;
+
 
   return (
     <div className="min-h-screen bg-background">
@@ -323,6 +325,8 @@ function Dashboard() {
                     <>
                       <Check className="h-3 w-3 mr-1 text-primary" /> Google
                     </>
+                  ) : gcalNeedsReconnect ? (
+                    "Reconnect Google"
                   ) : (
                     "Connect Google"
                   )}
@@ -334,13 +338,8 @@ function Dashboard() {
                     <DropdownMenuLabel className="text-xs font-normal text-muted-foreground truncate">
                       {gcalQ.data?.accountLabel ?? "Connected"}
                     </DropdownMenuLabel>
-                    {gcalQ.data && !gcalQ.data.readable && (
-                      <DropdownMenuItem onClick={handleConnectGoogle}>
-                        <Calendar className="h-4 w-4 mr-2" />
-                        Reconnect — calendar not readable
-                      </DropdownMenuItem>
-                    )}
                     <DropdownMenuSeparator />
+
                     <DropdownMenuItem onClick={() => importMut.mutate()} disabled={importMut.isPending}>
                       <Download className="h-4 w-4 mr-2" />
                       {importMut.isPending ? "Importing…" : "Import next 2 weeks"}
@@ -351,11 +350,17 @@ function Dashboard() {
                     </DropdownMenuItem>
                   </>
                 ) : (
-
-                  <DropdownMenuItem onClick={handleConnectGoogle}>
-                    <Calendar className="h-4 w-4 mr-2" />
-                    Connect your Google account
-                  </DropdownMenuItem>
+                  <>
+                    {gcalNeedsReconnect && (
+                      <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                        Google sign-in expired
+                      </DropdownMenuLabel>
+                    )}
+                    <DropdownMenuItem onClick={handleConnectGoogle}>
+                      <Calendar className="h-4 w-4 mr-2" />
+                      {gcalNeedsReconnect ? "Reconnect Google Calendar" : "Connect your Google account"}
+                    </DropdownMenuItem>
+                  </>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>

@@ -50,26 +50,28 @@ export const saveGoogleCalendarConnection = createServerFn({ method: "POST" })
 export const getGoogleCalendarStatus = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { CONNECTOR_ID, fetchGoogleBusy } = await import("./google-calendar.server");
+    const { CONNECTOR_ID, probeGoogleReadable } = await import("./google-calendar.server");
     const { getConnectionInfo, getConnectionKeyForUser } = await import(
       "./appUserConnections.server"
     );
     const info = await getConnectionInfo(context.userId, CONNECTOR_ID);
-    if (!info) return { connected: false, accountLabel: null, readable: false };
+    if (!info) return { connected: false, accountLabel: null, readable: false, needsReconnect: false };
     // "Connected" must mean the key actually works — otherwise the UI lies.
     const key = await getConnectionKeyForUser(context.userId, CONNECTOR_ID);
-    let readable = false;
-    if (key) {
-      const now = new Date();
-      const busy = await fetchGoogleBusy(
-        context.userId,
-        now.toISOString(),
-        new Date(now.getTime() + 24 * 3600 * 1000).toISOString(),
-      ).catch(() => null);
-      readable = busy !== null;
-    }
-    return { connected: !!key, accountLabel: info.account_label ?? null, readable };
+    const readable = key ? await probeGoogleReadable(context.userId) : false;
+    // A dead credential is cleared by the probe above — re-check so we don't
+    // report a connection that no longer exists.
+    const stillThere = key
+      ? await getConnectionKeyForUser(context.userId, CONNECTOR_ID)
+      : null;
+    return {
+      connected: !!stillThere,
+      accountLabel: info.account_label ?? null,
+      readable: readable && !!stillThere,
+      needsReconnect: !!key && (!stillThere || !readable),
+    };
   });
+
 
 // ---------- Disconnect ----------
 

@@ -11,18 +11,37 @@ export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar.readonly",
 ];
 
+/** Google/gateway told us the stored credential is dead — clear it so the UI
+ * shows "reconnect" and the next OAuth run starts clean (no stale key header). */
+export async function isDeadCredential(res: Response): Promise<boolean> {
+  if (res.status !== 401 && res.status !== 403) return false;
+  const body = await res.clone().text();
+  return /refresh_token_expired|invalid_grant|credential_not_found|revoked|unauthorized_client/i.test(
+    body,
+  );
+}
+
+async function clearDeadCredential(userId: string, res: Response) {
+  if (!(await isDeadCredential(res))) return;
+  const { deleteConnectionForUser } = await import("./appUserConnections.server");
+  console.warn(`[gcal] credential dead for ${userId} — clearing stored connection`);
+  await deleteConnectionForUser(userId, CONNECTOR_ID).catch(() => {});
+}
+
 async function gcall(userId: string, path: string, init?: RequestInit) {
   const { getConnectionKeyForUser } = await import("./appUserConnections.server");
   const { callAsAppUser } = await import("@/integrations/lovable/appUserConnector");
   const key = await getConnectionKeyForUser(userId, CONNECTOR_ID);
   if (!key) return null;
-  return callAsAppUser({
+  const res = await callAsAppUser({
     gatewayBaseUrl: GATEWAY_BASE_URL,
     connectionAPIKey: key,
     connectorId: CONNECTOR_ID,
     path,
     init,
   });
+  if (!res.ok) await clearDeadCredential(userId, res);
+  return res;
 }
 
 /** Read the user's real Google Calendar events in a window (availability). */
@@ -157,5 +176,17 @@ export async function fetchPrimaryCalendarLabel(connectionAPIKey: string): Promi
     return j.id ?? j.summary ?? null;
   } catch {
     return null;
+  }
+}
+
+/** True only if we can actually read the calendar right now. Unlike
+ * fetchGoogleBusy (which degrades to an empty list), this reports failures. */
+export async function probeGoogleReadable(userId: string): Promise<boolean> {
+  try {
+    const res = await gcall(userId, "/calendar/v3/calendars/primary");
+    return !!res && res.ok;
+  } catch (e) {
+    console.error("[gcal.probe] threw", e);
+    return false;
   }
 }
