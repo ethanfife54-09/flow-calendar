@@ -302,7 +302,9 @@ function Dashboard() {
   }, [messages.length]);
 
   const busy = textMut.isPending || imgMut.isPending;
-  const gcalConnected = gcalQ.data?.connected ?? false;
+  const gcalConnected = (gcalQ.data?.connected ?? false) && (gcalQ.data?.readable ?? false);
+  const gcalNeedsReconnect = gcalQ.data?.needsReconnect ?? false;
+
 
   return (
     <div className="min-h-screen bg-background">
